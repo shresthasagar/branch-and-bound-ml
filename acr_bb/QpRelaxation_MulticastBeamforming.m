@@ -94,9 +94,6 @@ end
 A(ix,(nfree+1):nvar)=-[hr',hi'];
 b(ix)=-1;
 
-A
-b
-
 optnew=optimset('Display','off','LargeScale','off');
 [x,lb,flag]=quadprog(Q,c,A,b,Aeq,beq,[],[],[],optnew);
 

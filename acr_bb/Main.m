@@ -11,7 +11,7 @@ clear;
 clc;
 N = 3; % Number of antennas
 M = 2; % Number of users
-Max_Iter = 5; % Maximum number of iterations
+Max_Iter = 1000; % Maximum number of iterations
 epsilon = 0.0001; % The relative error tolerance
 
 % H=randn(N,M)+i * randn(N,M); 
@@ -27,7 +27,7 @@ H = Hr +i*Hi;
 %Randomly generate complex Gaussian channel parameters
 
 % Run our ACR-BB algorithm
-[w_opt,final_lb,final_ub,lb_sequence,ub_sequence]=BranchBound_MultiCast(H',Max_Iter,epsilon);
+[w_opt,final_lb,final_ub,lb_sequence,ub_sequence]=BranchBound_MultiCast(H,Max_Iter,epsilon);
 
 num_iter=length(lb_sequence);
 plot(1:num_iter,lb_sequence,1:num_iter,ub_sequence); % plot the lower and upper bounds sequences 

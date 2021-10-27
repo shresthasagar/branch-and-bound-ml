@@ -34,11 +34,13 @@ iter=2;
 con=1;
 
 while iter<=max_iternum
+    iter
     xc=A(con,1:n)';
     lc=A(con,(n+1):(n+m) )';
     uc=A(con,(n+m+1):(n+m*2) )';
+
     [zc,cd]=min(abs(H'*xc));
-    cd
+    
     xchild_left_lb=lc;
     xchild_left_ub=uc;
     xchild_right_lb=lc;
