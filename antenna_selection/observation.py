@@ -50,7 +50,7 @@ class Observation(object):
         interference = W_H*mask_comp
         aggregate_interference = np.sum(interference, axis=1)
 
-        H_w = np.matmul(model.H_complex.conj().T, model.active_node.w_sol)
+        H_w = np.matmul(model.H_complex.conj().T, model.active_node.W_sol)
         self.variable_features[:,3] = np.squeeze(direct)
         self.variable_features[:,4] = np.squeeze(aggregate_interference)
         self.variable_features[:,5] = model.active_node.depth

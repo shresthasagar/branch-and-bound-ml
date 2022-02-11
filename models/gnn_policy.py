@@ -70,13 +70,12 @@ class GNNPolicy(torch.nn.Module):
 
     def forward(self, constraint_features, edge_indices, edge_features, variable_features):
         reversed_edge_indices = torch.stack([edge_indices[1], edge_indices[0]], dim=0)
-        
+
         # First step: linear embedding layers to a common dimension (64)
         constraint_features = self.antenna_embedding(constraint_features)
         edge_features = self.edge_embedding(edge_features)
         variable_features = self.var_embedding(variable_features)
         
-
         # Two half convolutions
         # print('var', variable_features.shape, 'cons', constraint_features.shape, 'edge', reversed_edge_indices.shape, 'edge_f', edge_features.shape)
         constraint_features = self.conv_v_to_c(variable_features, reversed_edge_indices, edge_features, constraint_features)
@@ -84,6 +83,7 @@ class GNNPolicy(torch.nn.Module):
 
         # A final MLP on the variable features
         output = self.output_module(variable_features).squeeze(-1)
+
         return output
 
 class Critic(torch.nn.Module):
