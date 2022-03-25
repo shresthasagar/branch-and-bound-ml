@@ -8,7 +8,7 @@ from models.gnn_policy import GNNPolicy, GNNNodeSelectionPolicy
 from models.fcn_policy import FCNNodeSelectionLinearPolicy
 from models.gnn_dataset import get_graph_from_obs
 from models.setting import MODEL_PATH
-from beamforming_test import Beamforming, BeamformingWithSelectedAntennas
+from antenna_selection.beamforming_test import Beamforming, BeamformingWithSelectedAntennas
 
 class Node(object):
     def __init__(self, z_mask=None, z_sol=None, z_feas=None, W_sol=None, U=False, L=False, depth=0, parent_node=None, node_index = 0):
@@ -222,10 +222,10 @@ class ASBBenv(object):
         if not np.sum(np.round(z_sol_left)*z_mask_left)>=self.max_ant:
             # solve the relaxed formulation
             t1 = time.time()
-            print('z mask', z_mask_left)
-            print('z sol', z_sol_left)
+            # print('z mask', z_mask_left)
+            # print('z sol', z_sol_left)
             [z_left, W_left, L_left] = self.bm.solve_beamforming(z_mask=z_mask_left, z_sol=z_sol_left)
-            print('solution', L_left)
+            # print('solution', L_left)
             
             # [z_left, W_left, L_left] = solve_beamforming_relaxed(self.H_complex, max_ant=self.max_ant, z_mask=z_mask_left, z_sol=z_sol_left)
             t += time.time() - t1
@@ -326,7 +326,6 @@ class ASBBenv(object):
             return
         min_L_child = min(L_left, L_right)
         self.global_L = min(min(self.L_list), min_L_child)
-        print("TOTAL TIME cvx", t)
             
         # self.global_U = min([np.min(self.U_list), self.global_U])
 
@@ -456,7 +455,7 @@ class ASBBenv(object):
 
 
 
-def solve_bb(instance, max_ant=5, max_iter=1000, policy='default', policy_type='gnn', oracle_opt=None):
+def solve_bb(instance, max_ant=5, max_iter=10000, policy='default', policy_type='gnn', oracle_opt=None):
     t1 = time.time()
     if policy_type == 'default':
         env = ASBBenv(observation_function=Observation, epsilon=0.001)
@@ -475,11 +474,9 @@ def solve_bb(instance, max_ant=5, max_iter=1000, policy='default', policy_type='
     env.reset(instance, max_ant=max_ant)
     timestep = 0
     done = False
-    print("INITIALIZATION COMPLETED: ", time.time()-t1)
-    # print(len(env.nodes))
     while timestep < max_iter and len(env.nodes)>0 and not done:
         print('timestep', timestep, env.global_U, env.global_L)
-        # t1 = time.time()
+        
         env.fathom_nodes()
         if len(env.nodes) == 0:
             break
@@ -493,11 +490,8 @@ def solve_bb(instance, max_ant=5, max_iter=1000, policy='default', policy_type='
         #     continue
         # else:
         branching_var = branching_policy.select_variable(node_feats, env.action_set_indices)
-        # print("NOW BRANCHING: ", time.time()-t1)
-        t1 = time.time()
         done = env.push_children(branching_var, node_id)
         timestep = timestep+1
-        print("BRANCHING COMPLETED: ", time.time()-t1)
 
     print('ended')
     # returns the solution, objective value, timestep and the time taken
@@ -505,9 +499,9 @@ def solve_bb(instance, max_ant=5, max_iter=1000, policy='default', policy_type='
 
 if __name__ == '__main__':
     np.random.seed(seed = 100)
-    N = 12
-    M = 6
-    max_ant = 5
+    N = 8
+    M = 5
+    max_ant = 3
     
     u_avg = 0
     t_avg = 0
@@ -515,11 +509,11 @@ if __name__ == '__main__':
     for i in range(1):
         H = np.random.randn(N, M) + 1j*np.random.randn(N,M)    
         instance = np.stack((np.real(H), np.imag(H)), axis=0)
-        global_U, _, timesteps, t = solve_bb(instance, max_ant=max_ant, max_iter = 7000)
+        _, global_U, timesteps, t = solve_bb(instance, max_ant=max_ant, max_iter = 7000)
         u_avg += global_U
         t_avg += t
         tstep_avg += timesteps
 
-    print(u_avg, t_avg, tstep_avg)
+    print(u_avg, t_avg, tstep_avg, u_avg)
 
     # print('bb solution: {}, optimal: {}'.format(global_U, optimal_f) )

@@ -37,31 +37,39 @@ def solve_beamforming_relaxed(H, max_ant=None, z_mask=None, z_sol=None, M=1000, 
 
     constraints = []
     for k in range(K):
-        constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*W.H @ H[:,k], np.ones(1))), 2)]
+        Imask = np.eye(K)
+        Imask[k,k] = 0
+        constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*(W @ Imask).H @ H[:,k], np.ones(1))), 2)]
+
+    # for k in range(K):
+    #     constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*W.H @ H[:,k], np.ones(1))), 2)]
     constraints += [z >= zero, z <= one]
     constraints += [cp.sum(z) <= max_ant] 
     # constraints += [np.diag(z_mask) @ z == z_sol]
-    for n in range(N):
-        if z_mask[n]:
-            constraints += [z[n] == np.round(z_sol[n])]
+    # for n in range(N):
+    #     if z_mask[n]:
+    #         constraints += [z[n] == np.round(z_sol[n])]
+    constraints += [cp.multiply(z, z_mask) == (z_sol*z_mask).copy()]
+
     #TODO: write the below in vectorized form
-    for n in range(N):
-        # constraints += [cp.norm(W[n,:], 2)<= M*z[n]]
-        for k in range(K):
-            constraints += [cp.real(W[n,k])<= M*z[n]]
-            constraints += [cp.real(W[n,k])>=-M*z[n]]
-            constraints += [cp.imag(W[n,k])<= M*z[n]]
-            constraints += [cp.imag(W[n,k])>=-M*z[n]]
+    # for n in range(N):
+    #     # constraints += [cp.norm(W[n,:], 2)<= M*z[n]]
+    #     for k in range(K):
+    #         constraints += [cp.real(W[n,k])<= M*z[n]]
+    #         constraints += [cp.real(W[n,k])>=-M*z[n]]
+    #         constraints += [cp.imag(W[n,k])<= M*z[n]]
+    #         constraints += [cp.imag(W[n,k])>=-M*z[n]]
+    # constraints += [cp.norm(W, 1, axis=1) <= M*z]
+    
+    # zu = z.expand_dims(axis=1)
+    for k in range(K):
+        constraints += [cp.real(W[:,k]) <= M*z]
+        constraints += [cp.real(W[:,k]) >= -M*z]
+        constraints += [cp.imag(W[:,k]) <= M*z]
+        constraints += [cp.imag(W[:,k]) >= -M*z]
 
     prob = cp.Problem(obj, constraints)
-    print(" PREPARATION TIME: ", time.time() - t1)
-
-    print('mask value', z_mask)
-    print('sol value', z_sol)
-
-    t1 = time.time()
     prob.solve(solver=cp.MOSEK, verbose=False)
-    print("SOLUTION TIME: ", time.time() - t1)
     if prob.status in ['infeasible', 'unbounded']:
         print('infeasible solution')
         return None, None, np.inf
@@ -80,25 +88,36 @@ def solve_beamforming_with_selected_antennas(H, z, M=1000, noise_var=1, min_snr=
     c_1 = (1/np.sqrt(min_snr*noise_var))
     c_2 = (1/noise_var)
 
+    z_matrix = np.diag(z)
     constraints = []
     for k in range(K):
-        constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*W.H @ H[:,k], np.ones(1))), 2)]
+        Imask = np.eye(K)
+        Imask[k,k] = 0
+        constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ cp.multiply(W[:,k], z)) >= cp.norm(cp.hstack((c_2*((W @ Imask).H @ z_matrix) @ H[:,k], np.ones(1))), 2)]
+
+        # constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*(W @ Imask).H @ H[:,k], np.ones(1))), 2)]
+
+    # for k in range(K):
+    #     constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*W.H @ H[:,k], np.ones(1))), 2)]
 
     #TODO: write the below in vectorized form
-    z = np.round(z.copy())
-    for n in range(N):
-        for k in range(K):
-            constraints += [cp.real(W[n,k])<=M*z[n]]
-            constraints += [cp.real(W[n,k])>=-M*z[n]]
-            constraints += [cp.imag(W[n,k])<=M*z[n]]
-            constraints += [cp.imag(W[n,k])>=-M*z[n]]
+    
+    # for n in range(N):
+    #     for k in range(K):
+    #         constraints += [cp.real(W[n,k])<=M*z[n]]
+    #         constraints += [cp.real(W[n,k])>=-M*z[n]]
+    #         constraints += [cp.imag(W[n,k])<=M*z[n]]
+    #         constraints += [cp.imag(W[n,k])>=-M*z[n]]
 
     prob = cp.Problem(obj, constraints)
     prob.solve(solver=cp.MOSEK, verbose=False)
 
+    # print("z", z)
+
     if prob.status in ['infeasible', 'unbounded']:
+        # print('infeasible solution with selected antennas')
         return None, np.inf
-    
+    # print(z,np.linalg.norm(W.value, 'fro')**2)
     return W.value, np.linalg.norm(W.value, 'fro')**2
 
 

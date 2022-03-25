@@ -8,6 +8,8 @@ from models.gnn_policy import GNNPolicy, GNNNodeSelectionPolicy
 from models.fcn_policy import FCNNodeSelectionLinearPolicy
 from models.gnn_dataset import get_graph_from_obs
 from models.setting import MODEL_PATH
+from antenna_selection.beamforming_test import Beamforming, BeamformingWithSelectedAntennas
+from model_lower_bound import *
 
 class Node(object):
     def __init__(self, z_mask=None, z_sol=None, z_feas=None, W_sol=None, U=False, L=False, depth=0, parent_node=None, node_index = 0):
@@ -43,7 +45,7 @@ class DefaultBranchingPolicy(object):
 
 
 class ASBBenv(object):
-    def __init__(self, observation_function=Observation, node_select_policy_path='default', policy_type='gnn', epsilon=0.001):
+    def __init__(self, observation_function=Observation, node_select_policy_path='default', policy_type='gnn', epsilon=0.001, lower_bound_method_path=None):
         """
         @params: 
             node_select_policy_path: one of {'default', 'oracle', policy_params}
@@ -103,6 +105,14 @@ class ASBBenv(object):
         self.observation_function = observation_function
         self.include_heuristic_solutions = False
         self.heuristic_solutions = []
+        
+        self.bm_solver = None
+
+
+        self.lower_bound_method = GNNLowerBound()
+        self.lower_bound_method.load_state_dict( torch.load(lower_bound_method_path))
+        self.lower_bound_method.eval()
+
 
     def set_heuristic_solutions(self, solution):
         """
@@ -132,6 +142,9 @@ class ASBBenv(object):
 
         self.H = instance
         self.H_complex = self.H[0,:,:] + self.H[1,:,:]*1j
+        self.bm = Beamforming(self.H_complex, max_ant=max_ant)
+        self.bm_with_antennas = BeamformingWithSelectedAntennas(self.H_complex, max_ant=max_ant)
+
         self.min_bound_gap = np.ones(self.H.shape[-1])*0.01
         
         self.max_ant = max_ant
@@ -215,8 +228,18 @@ class ASBBenv(object):
         # check if the current problem has only one feasible solution (do not construct new node in that case)
         if not np.sum(np.round(z_sol_left)*z_mask_left)>=self.max_ant:
             # solve the relaxed formulation
-            [z_left, W_left, L_left] = solve_beamforming_relaxed(self.H_complex, max_ant=self.max_ant, z_mask=z_mask_left, z_sol=z_sol_left)
-            assert L_left >= self.active_node.L - self.epsilon, 'lower bound of left child node less than that of parent'
+            t1 = time.time()
+
+            (z_left, L_left) = model_pass(self.lower_bound_method, H_complex=self.H_complex, z_sol=z_sol_left, z_mask=z_mask_left)
+            W_left = np.zeros(self.H_complex.shape)
+
+            # [z_left, W_left, L_left] = self.bm.solve_beamforming(z_mask=z_mask_left, z_sol=z_sol_left)
+            # [z_left, W_left, L_left] = solve_beamforming_relaxed(self.H_complex, max_ant=self.max_ant, z_mask=z_mask_left, z_sol=z_sol_left)
+            t += time.time() - t1
+            # assert L_left >= self.active_node.L - self.epsilon, 'lower bound of left child node less than that of parent'
+            if L_left < self.active_node.L:
+                L_left = self.active_node.L.copy()
+
 
             if not L_left == np.inf:
                 # check if any of the solution variables are boolean
@@ -225,12 +248,16 @@ class ASBBenv(object):
 
                 z_feas_left = self.get_feasible_z(z_left)
                 
-                W_feas, U_left = solve_beamforming_with_selected_antennas(self.H_complex, z_feas_left)
+                t1 = time.time()
+                W_feas, U_left = self.bm_with_antennas.solve_beamforming(z=z_feas_left)
+
+                # W_feas, U_left = solve_beamforming_with_selected_antennas(self.H_complex, z_feas_left)
+                t += time.time() - t1
 
                 # only append the node if it is not yet feasible
                 if not np.sum(np.round(z_left)*z_mask_left)>=self.max_ant:
                     self.node_index_count += 1
-                    child_left = Node(z_mask=z_mask_left, z_sol=z_left, z_feas=z_feas_left, W_sol=W_left, U=U_left, L=L_left, depth=self.active_node.depth+1, node_index=self.node_index_count) 
+                    child_left = Node(z_mask=z_mask_left, z_sol=z_left, z_feas=z_feas_left, W_sol=W_left, U=U_left, L=L_left, depth=self.active_node.depth+1, node_index=self.node_index_count)
                     self.L_list.append(L_left)
                     self.U_list.append(U_left)
                     self.nodes.append(child_left)
@@ -238,7 +265,12 @@ class ASBBenv(object):
             else:
                 U_left = np.inf
         else:
-            W_feas, U_left = solve_beamforming_with_selected_antennas(self.H_complex, np.round(z_sol_left)*z_mask_left)
+            t1 = time.time()
+            W_feas, U_left = self.bm_with_antennas.solve_beamforming(z = np.round(z_sol_left)*z_mask_left)
+            
+            # W_feas, U_left = solve_beamforming_with_selected_antennas(self.H_complex, np.round(z_sol_left)*z_mask_left)
+
+            t += time.time() - t1
 
             L_left = U_left
             z_feas_left = np.round(z_sol_left)*z_mask_left
@@ -256,16 +288,29 @@ class ASBBenv(object):
         if not np.sum(np.round(z_sol_right)*z_mask_right)>=self.max_ant:
             # solve relaxed problem for the right child        
             
-            [z_right, W_right, L_right] = solve_beamforming_relaxed(self.H_complex, max_ant=self.max_ant, z_mask=z_mask_right, z_sol=z_sol_right)
-            assert L_right >= self.active_node.L - self.epsilon, 'lower bound of right child node less than that of parent'
+            t1 = time.time()
             
+            (z_right, L_right) = model_pass(self.lower_bound_method, H_complex=self.H_complex, z_sol=z_sol_right, z_mask=z_mask_right)
+            W_right = np.zeros(self.H_complex.shape)
+            # [z_right, W_right, L_right] = self.bm.solve_beamforming(z_mask=z_mask_right, z_sol=z_sol_right)
+            # [z_right, W_right, L_right] = solve_beamforming_relaxed(self.H_complex, max_ant=self.max_ant, z_mask=z_mask_right, z_sol=z_sol_right)
+            t += time.time() - t1
+            # assert L_right >= self.active_node.L - self.epsilon, 'lower bound of right child node less than that of parent'
+
+            if L_right < self.active_node.L:
+                L_right = self.active_node.L.copy()
+
             if not L_right == np.inf:
                 temp = (1-z_mask_right)*(np.abs(z_right - 0.5))
                 z_mask_right[temp>0.499] = 1
 
                 z_feas_right = self.get_feasible_z(z_right)
                 
-                W_feas, U_right = solve_beamforming_with_selected_antennas(self.H_complex, z_feas_right)
+                t1 = time.time()
+                W_feas, U_right = self.bm_with_antennas.solve_beamforming(z=z_feas_right)
+
+                # W_feas, U_right = solve_beamforming_with_selected_antennas(self.H_complex, z_feas_right)
+                t += time.time() - t1
 
                 if not np.sum(np.round(z_right)*z_mask_right)>=self.max_ant:
                     self.node_index_count += 1
@@ -278,7 +323,11 @@ class ASBBenv(object):
                 U_left = np.inf
         else:
             
-            W_feas, U_right = solve_beamforming_with_selected_antennas(self.H_complex, np.round(z_sol_right)*z_mask_right)
+            t1 = time.time()
+            W_feas, U_right = self.bm_with_antennas.solve_beamforming(z=np.round(z_sol_right)*z_mask_right)
+
+            # W_feas, U_right = solve_beamforming_with_selected_antennas(self.H_complex, np.round(z_sol_right)*z_mask_right)
+            t += time.time() - t1
             L_right = U_right
             z_feas_right = np.round(z_sol_right)*z_mask_right
 
@@ -421,27 +470,28 @@ class ASBBenv(object):
 
 
 
-def solve_bb(instance, max_ant=5, max_iter=1000, policy='default', policy_type='gnn', oracle_opt=None):
+def solve_bb(instance, max_ant=5, max_iter=1000, policy='default', policy_type='gnn', oracle_opt=None, lower_bound_method_path=None):
     t1 = time.time()
     if policy_type == 'default':
-        env = ASBBenv(observation_function=Observation, epsilon=0.001)
+        env = ASBBenv(observation_function=Observation, epsilon=0.001, lower_bound_method_path=lower_bound_method_path)
     elif policy_type == 'gnn':
-        env = ASBBenv(observation_function=Observation, epsilon=0.001)
+        env = ASBBenv(observation_function=Observation, epsilon=0.001, lower_bound_method_path=lower_bound_method_path)
     elif policy_type == 'linear':
-        env = ASBBenv(observation_function=LinearObservation, epsilon=0.001)
+        env = ASBBenv(observation_function=LinearObservation, epsilon=0.001, lower_bound_method_path=lower_bound_method_path)
     elif policy_type == 'oracle':
-        env = ASBBenv(observation_function=Observation, epsilon=0.001)
+        env = ASBBenv(observation_function=Observation, epsilon=0.001, lower_bound_method_path=lower_bound_method_path)
         pass
 
     branching_policy = DefaultBranchingPolicy()
 
+    t1 = time.time()
 
     env.reset(instance, max_ant=max_ant)
     timestep = 0
     done = False
-    # print(len(env.nodes))
     while timestep < max_iter and len(env.nodes)>0 and not done:
         print('timestep', timestep, env.global_U, env.global_L)
+        
         env.fathom_nodes()
         if len(env.nodes) == 0:
             break
@@ -464,17 +514,19 @@ def solve_bb(instance, max_ant=5, max_iter=1000, policy='default', policy_type='
 
 if __name__ == '__main__':
     np.random.seed(seed = 100)
-    N = 12
-    M = 6
+    N = 8
+    M = 3
     max_ant = 5
     
+    lower_bound_method_path = 'trained_models/lower_bound_gnn.model'
+
     u_avg = 0
     t_avg = 0
     tstep_avg = 0
     for i in range(1):
         H = np.random.randn(N, M) + 1j*np.random.randn(N,M)    
         instance = np.stack((np.real(H), np.imag(H)), axis=0)
-        z_inc, global_U, timesteps, t = solve_bb(instance, max_ant=max_ant, max_iter = 7000)
+        global_U, _, timesteps, t = solve_bb(instance, max_ant=max_ant, max_iter = 7000, lower_bound_method_path=lower_bound_method_path)
         u_avg += global_U
         t_avg += t
         tstep_avg += timesteps

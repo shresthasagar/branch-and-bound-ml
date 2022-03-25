@@ -29,7 +29,6 @@ def sdr(H, num_sample_random=50):
     outvecs += [ vec/min(abs(np.matmul(H.conj().T, vec))) for vec in randvecs]
 
     # randC
-    
     randvecs = [np.random.multivariate_normal(np.zeros(N), W_real) + 1j* np.random.multivariate_normal(np.zeros(N), W_imag) for i in range(num_sample_random)]
     outvecs += [ vec/min(abs(np.matmul(H.conj().T, vec))) for vec in randvecs]
     norms = [np.linalg.norm(vec) for vec in outvecs]

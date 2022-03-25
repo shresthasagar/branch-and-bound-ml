@@ -19,17 +19,16 @@ def beamforming(H, z, noise_var=1, min_snr=1):
     return W.value
     
 class Beamforming():
-    def __init__(self, H, max_ant=None, M=1000, noise_var=1, min_snr=1):
+    def __init__(self, H, max_ant=None, T=1000, noise_var=1, min_snr=1):
         self.N, self.K = H.shape
         
         self.H = H.copy()
         self.max_ant = max_ant
-        self.M = M
+        self.T = T
         self.zero = np.zeros(self.N)
         self.one = np.ones(self.N)
         
-        self.c_1 = cp.Parameter()
-        self.c_1.value = (1/np.sqrt(min_snr*noise_var))
+        self.c_1 = (1/np.sqrt(min_snr*noise_var))
         self.c_2 = (1/noise_var)
 
         self.z_constr = cp.Parameter(self.N)
@@ -41,18 +40,27 @@ class Beamforming():
 
         self.constraints = []
         for k in range(self.K):
-            self.constraints += [self.c_1*cp.real(np.expand_dims(self.H[:,k], axis=0) @ self.W[:,k]) >= cp.norm(cp.hstack((self.c_2*self.W.H @ self.H[:,k], np.ones(1))), 2)]
+            Imask = np.eye(self.K)
+            Imask[k,k] = 0
+            self.constraints += [self.c_1*cp.real(np.expand_dims(self.H[:,k], axis=0) @ self.W[:,k]) >= cp.norm(cp.hstack((self.c_2*(self.W @ Imask).H @ self.H[:,k], np.ones(1))), 2)]
         self.constraints += [self.z >= self.zero, self.z <= self.one]
         
-        self.constraints += [cp.sum(self.z) <= self.max_ant] 
+        self.constraints += [cp.sum(self.z) == self.max_ant] 
 #         self.constraints += [self.z == cp.multiply(self.z_mask,self.z_sol)]
         self.constraints += [cp.multiply(self.z, self.z_mask) == self.z_constr]
 
 #         for n in range(N):
 #             if self.z_mask[n]:
 #                 self.constraints += [self.z[n] == self.z_constr[n]]
-                
-        self.constraints += [cp.norm(self.W, 'inf', axis=1) <= self.M*self.z]
+
+        for k in range(self.K):
+            self.constraints += [cp.real(self.W[:,k]) <=  T*self.z]
+            self.constraints += [cp.real(self.W[:,k]) >= -T*self.z]
+            self.constraints += [cp.imag(self.W[:,k]) <=  T*self.z]
+            self.constraints += [cp.imag(self.W[:,k]) >= -T*self.z]
+
+
+        # self.constraints += [cp.norm(self.W, 2, axis=1) <= self.T*self.z]
         self.prob = cp.Problem(self.obj, self.constraints)
 
 
@@ -64,7 +72,11 @@ class Beamforming():
         
         self.z_mask.value = z_mask.copy()
         self.z_constr.value = (z_mask*z_sol).copy()
-        self.prob.solve(solver=cp.MOSEK, verbose=False, warm_start=True)
+        try:
+            self.prob.solve(solver=cp.MOSEK, verbose=False)
+        except:
+            return None, None, np.inf
+            
         if self.prob.status in ['infeasible', 'unbounded']:
             print('infeasible solution')
             return None, None, np.inf
@@ -73,12 +85,12 @@ class Beamforming():
 
 
 class BeamformingWithSelectedAntennas():
-    def __init__(self, H, max_ant=None, M=1000, noise_var=1, min_snr=1):
+    def __init__(self, H, max_ant=None, T=1000, noise_var=1, min_snr=1):
         self.N, self.K = H.shape
         
         self.H = H.copy()
         self.max_ant = max_ant
-        self.M = M
+        self.T = T
         self.zero = np.zeros(self.N)
         self.one = np.ones(self.N)
         
@@ -93,9 +105,17 @@ class BeamformingWithSelectedAntennas():
 
         self.constraints = []
         for k in range(self.K):
-            self.constraints += [self.c_1*cp.real(np.expand_dims(self.H[:,k], axis=0) @ self.W[:,k]) >= cp.norm(cp.hstack((self.c_2*self.W.H @ self.H[:,k], np.ones(1))), 2)]
+            Imask = np.eye(self.K)
+            Imask[k,k] = 0
+            self.constraints += [self.c_1*cp.real(np.expand_dims(self.H[:,k], axis=0) @ cp.multiply(self.W[:,k], self.z_constr)) >= cp.norm(cp.hstack((self.c_2*((self.W @ Imask).H @ cp.diag(self.z_constr)) @ self.H[:,k], np.ones(1))), 2)]
         
-        self.constraints += [cp.norm(self.W, 'inf', axis=1) <= self.M*self.z_constr]
+        # self.constraints += [cp.norm(self.W, 'inf', axis=1) <= self.T*self.z_constr]
+        # for n in range(self.N):
+        #     for k in range(self.K):
+        #         self.constraints += [cp.real(self.W[n,k])<= T*self.z_constr[n]]
+        #         self.constraints += [cp.real(self.W[n,k])>=-T*self.z_constr[n]]
+        #         self.constraints += [cp.imag(self.W[n,k])<= T*self.z_constr[n]]
+        #         self.constraints += [cp.imag(self.W[n,k])>=-T*self.z_constr[n]]
         self.prob = cp.Problem(self.obj, self.constraints)
 
 
@@ -103,13 +123,17 @@ class BeamformingWithSelectedAntennas():
         if W_init is not None:
             self.W.value = W_init.copy()
         
-        self.z_constr.value = z.copy()
-        self.prob.solve(solver=cp.MOSEK, verbose=False)
+        self.z_constr.value = np.round(z.copy())
+        
+        try:
+            self.prob.solve(solver=cp.MOSEK, verbose=False)
+        except:
+            return None, np.inf
         if self.prob.status in ['infeasible', 'unbounded']:
-            print('infeasible antenna solution')
+            # print('infeasible antenna solution')
             return None, np.inf
 
-        return self.W.value, np.linalg.norm(self.W.value, 'fro')**2
+        return self.W.value.copy(), np.linalg.norm(self.W.value.copy(), 'fro')**2
 
 
 
