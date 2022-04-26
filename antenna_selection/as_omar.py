@@ -1,6 +1,7 @@
 import cvxpy as cp
 import numpy as np
-from beamforming import solve_beamforming_with_selected_antennas
+# from beamforming import solve_beamforming_with_selected_antennas
+from antenna_selection.solve_relaxation import solve_relaxed
 
 
 
@@ -15,8 +16,8 @@ def as_omar(H, max_ant=5):
     u_new = np.ones((N,1))
     r = 0
     max_iter = 30
-    # while np.linalg.norm(u-u_new)>0.0001 and r < max_iter:
-    while r < max_iter:
+    while np.linalg.norm(u-u_new)>0.0001 and r < max_iter:
+    # while r < max_iter:
         print('sparse iteration  {}'.format(r))
         r += 1
         u = u_new.copy()
@@ -58,13 +59,13 @@ def as_omar(H, max_ant=5):
     after_iter_ant_count = mask.sum()
 
     # step 3
-    W, obj = solve_beamforming_with_selected_antennas(H, mask)
+    _, W, obj, opt = solve_relaxed(H, z_mask=np.ones(N), z_sol = mask)
     print(obj)
     print('Before lambda iteration: {}'.format(before_iter_ant_count))
-    print('After lambda iteration: {}'.format(before_iter_ant_count))
+    print('After lambda iteration: {}'.format(after_iter_ant_count))
     if mask.sum() > max_ant:
         return None, mask.copy()
-    return obj.copy(), mask.copy()
+    return obj, mask.copy()
 
 def sparse_iteration(H, u, M=1000, noise_var=1, min_snr=1):
     """
@@ -85,7 +86,7 @@ def sparse_iteration(H, u, M=1000, noise_var=1, min_snr=1):
     for k in range(K):
         Imask = np.eye(K)
         Imask[k,k] = 0
-        constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*(W @ Imask).H @ H[:,k], np.ones(1))), 2)]
+        constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0).conj() @ W[:,k]) >= cp.norm(cp.hstack((c_2*(W @ Imask).H @ H[:,k], np.ones(1))), 2)]
 
     # for k in range(K):
     #     constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*W.H @ H[:,k], np.ones(1))), 2)]
@@ -118,7 +119,7 @@ def sdp_omar(H, lmbda, u, M=1000, noise_var=1, min_snr=1):
     for k in range(K):
         Imask = np.eye(K)
         Imask[k,k] = 0
-        constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*(W @ Imask).H @ H[:,k], np.ones(1))), 2)]
+        constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0).conj() @ W[:,k]) >= cp.norm(cp.hstack((c_2*(W @ Imask).H @ H[:,k], np.ones(1))), 2)]
 
     # for k in range(K):
     #     constraints += [c_1*cp.real(np.expand_dims(H[:,k], axis=0) @ W[:,k]) >= cp.norm(cp.hstack((c_2*W.H @ H[:,k], np.ones(1))), 2)]
@@ -135,7 +136,7 @@ def sdp_omar(H, lmbda, u, M=1000, noise_var=1, min_snr=1):
 if __name__=='__main__':
     N, K = 8,8
     max_ant = 4
-    H = np.random.randn(N, K) + 1j*np.random.randn(N, K)
+    H = (np.random.randn(N, K) + 1j*np.random.randn(N, K))/np.sqrt(2)
     as_omar(H, max_ant=max_ant)
     # W, obj = sdp_omar(H, 50, np.ones((N,1)))
     # print(np.linalg.norm(W, axis=1), obj)

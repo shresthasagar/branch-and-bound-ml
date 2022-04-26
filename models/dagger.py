@@ -67,9 +67,9 @@ class TrainDagger(object):
         self.DEVICE = 'cuda'
         self.policy = self.policy.to(self.DEVICE)
 
-        self.M = 3
+        self.M = 4
         self.N = 8
-        self.max_ant = 5
+        self.max_ant = 4
         self.performance_list = []
 
         self.instances = instance_generator(self.M, self.N)

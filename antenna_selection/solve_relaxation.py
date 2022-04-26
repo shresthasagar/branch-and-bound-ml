@@ -24,7 +24,7 @@ class Beamforming():
         
         self.H = H.copy()
         self.max_ant = max_ant
-        self.T = T
+        
         self.zero = np.zeros(self.N)
         self.one = np.ones(self.N)
         
@@ -33,7 +33,9 @@ class Beamforming():
 
         self.z_constr = cp.Parameter(self.N)
         self.z_mask = cp.Parameter(self.N)
-        
+        self.T = cp.Parameter()
+        self.T.value = T
+
         self.W = cp.Variable((self.N, self.K), complex=True, name='W')
         self.z = cp.Variable((self.N), complex=False, name='z')
         self.obj = cp.Minimize(cp.square(cp.norm(self.W, 'fro')))
@@ -44,7 +46,6 @@ class Beamforming():
             Imask[k,k] = 0
             self.constraints += [self.c_1*cp.real(np.expand_dims(self.H[:,k], axis=0) @ self.W[:,k]) >= cp.norm(cp.hstack((self.c_2*(self.W @ Imask).H @ self.H[:,k], np.ones(1))), 2)]
         self.constraints += [self.z >= self.zero, self.z <= self.one]
-        
         self.constraints += [cp.sum(self.z) == self.max_ant] 
 #         self.constraints += [self.z == cp.multiply(self.z_mask,self.z_sol)]
         self.constraints += [cp.multiply(self.z, self.z_mask) == self.z_constr]
@@ -54,43 +55,45 @@ class Beamforming():
 #                 self.constraints += [self.z[n] == self.z_constr[n]]
 
         for k in range(self.K):
-            self.constraints += [cp.real(self.W[:,k]) <=  T*self.z]
-            self.constraints += [cp.real(self.W[:,k]) >= -T*self.z]
-            self.constraints += [cp.imag(self.W[:,k]) <=  T*self.z]
-            self.constraints += [cp.imag(self.W[:,k]) >= -T*self.z]
+            self.constraints += [cp.real(self.W[:,k]) <=  self.T*self.z]
+            self.constraints += [cp.real(self.W[:,k]) >= -self.T*self.z]
+            self.constraints += [cp.imag(self.W[:,k]) <=  self.T*self.z]
+            self.constraints += [cp.imag(self.W[:,k]) >= -self.T*self.z]
 
 
         # self.constraints += [cp.norm(self.W, 2, axis=1) <= self.T*self.z]
         self.prob = cp.Problem(self.obj, self.constraints)
 
 
-    def solve_beamforming(self, z_mask=None, z_sol=None, W_init=None, z_init=None):
+    def solve_beamforming(self, z_mask=None, z_sol=None, W_init=None, z_init=None, T=None):
         if W_init is not None:
             self.W.value = W_init.copy()
         if z_init is not None:
             self.z.value = z_init.copy()
+        if T is not None:
+            self.T.value = T
         
         self.z_mask.value = z_mask.copy()
         self.z_constr.value = (z_mask*z_sol).copy()
         try:
             self.prob.solve(solver=cp.MOSEK, verbose=False)
         except:
-            return None, None, np.inf
+            return None, None, np.inf, False
             
         if self.prob.status in ['infeasible', 'unbounded']:
             print('infeasible solution')
-            return None, None, np.inf
+            return None, None, np.inf, False
 
-        return self.z.value, self.W.value, np.linalg.norm(self.W.value, 'fro')**2
+        return self.z.value, self.W.value, np.linalg.norm(self.W.value, 'fro')**2, True
 
 
 class BeamformingWithSelectedAntennas():
-    def __init__(self, H, max_ant=None, T=1000, noise_var=1, min_snr=1):
+    def __init__(self, H, max_ant=None, noise_var=1, min_snr=1):
         self.N, self.K = H.shape
         
         self.H = H.copy()
         self.max_ant = max_ant
-        self.T = T
+
         self.zero = np.zeros(self.N)
         self.one = np.ones(self.N)
         
@@ -107,15 +110,8 @@ class BeamformingWithSelectedAntennas():
         for k in range(self.K):
             Imask = np.eye(self.K)
             Imask[k,k] = 0
-            self.constraints += [self.c_1*cp.real(np.expand_dims(self.H[:,k], axis=0) @ cp.multiply(self.W[:,k], self.z_constr)) >= cp.norm(cp.hstack((self.c_2*((self.W @ Imask).H @ cp.diag(self.z_constr)) @ self.H[:,k], np.ones(1))), 2)]
+            self.constraints += [self.c_1*cp.real(np.expand_dims(self.H[:,k], axis=0).conj() @ cp.multiply(self.W[:,k], self.z_constr)) >= cp.norm(cp.hstack((self.c_2*((self.W @ Imask).H @ cp.diag(self.z_constr)) @ self.H[:,k], np.ones(1))), 2)]
         
-        # self.constraints += [cp.norm(self.W, 'inf', axis=1) <= self.T*self.z_constr]
-        # for n in range(self.N):
-        #     for k in range(self.K):
-        #         self.constraints += [cp.real(self.W[n,k])<= T*self.z_constr[n]]
-        #         self.constraints += [cp.real(self.W[n,k])>=-T*self.z_constr[n]]
-        #         self.constraints += [cp.imag(self.W[n,k])<= T*self.z_constr[n]]
-        #         self.constraints += [cp.imag(self.W[n,k])>=-T*self.z_constr[n]]
         self.prob = cp.Problem(self.obj, self.constraints)
 
 
@@ -128,14 +124,94 @@ class BeamformingWithSelectedAntennas():
         try:
             self.prob.solve(solver=cp.MOSEK, verbose=False)
         except:
-            return None, np.inf
+            return None, np.inf, False
         if self.prob.status in ['infeasible', 'unbounded']:
             # print('infeasible antenna solution')
-            return None, np.inf
+            return None, np.inf, False
+        
+        # for k in range(self.K):
+        #     Imask = np.eye(self.K)
+        #     Imask[k,k] = 0
+        #     print('constraint', k, (self.c_1*cp.real(np.expand_dims(self.H[:,k], axis=0) @ cp.multiply(self.W.value[:,k], self.z_constr)) ).value, (cp.norm(cp.hstack((self.c_2*((self.W.value @ Imask).conj().T @ cp.diag(self.z_constr)) @ self.H[:,k], np.ones(1))), 2)).value)
+        # print('c2', self.c_2)
 
-        return self.W.value.copy(), np.linalg.norm(self.W.value.copy(), 'fro')**2
+        return self.W.value.copy(), np.linalg.norm(self.W.value.copy(), 'fro')**2, True
 
 
+def solve_relaxed(H=None, 
+                z_mask=None, 
+                z_sol=None, 
+                gamma=1, 
+                sigma_sq=1):
+    """
+    Lower bound method that solves a smaller sized subproblem with selected and undecided antennas 
+    """
+    N_original, M = H.shape
+
+    # sigma_sq= sigma_sq*np.ones(M)
+    # gamma= gamma*np.ones(M) #SINR levels, from -10dB to 20dB
+
+    H_short = H.copy()
+    for n in range(N_original-1, -1, -1):
+        if z_mask[n] and not z_sol[n]:
+            H_short = np.concatenate((H_short[:n, :], H_short[n+1:, :]), axis=0)
+    # print(H_short)
+    num_off_ants = np.sum(z_mask*(1-z_sol))
+    assert num_off_ants<N_original, 'number of allowed antennas < 1'
+    N = int(N_original - num_off_ants)
+
+    c_1 = (1/np.sqrt(gamma*sigma_sq))
+    c_2 = (1/sigma_sq)
+
+    W = cp.Variable((N, M), complex=True, name='W')
+    obj = cp.Minimize(cp.square(cp.norm(W, 'fro')))
+
+    constraints = []
+    for m in range(M):
+        Imask = np.eye(M)
+        Imask[m,m] = 0
+        constraints += [c_1*cp.real(np.expand_dims(H_short[:,m], axis=0).conj() @ W[:,m]) >= cp.norm(cp.hstack((c_2*((W @ Imask).H) @ H_short[:,m], np.ones(1))), 2)]
+
+
+    prob = cp.Problem(obj, constraints)
+    try:
+        prob.solve(solver=cp.MOSEK, verbose=False)
+    except:
+        return np.zeros(N_original), np.zeros((N_original,M)), np.inf, False
+        
+    if prob.status in ['infeasible', 'unbounded']:
+        # print('infeasible antenna solution')
+        return np.zeros(N_original), np.zeros((N_original,M)), np.inf, False
+
+
+    # for m in range(M):
+    #     Imask = np.eye(M)
+    #     Imask[m,m] = 0
+    #     print('constr', m, (c_1*cp.real(np.expand_dims(H_short[:,m], axis=0).conj() @ W[:,m])).value, (cp.norm(cp.hstack((c_2*((W @ Imask).H) @ H_short[:,m], np.ones(1))), 2)).value)
+    
+
+    # print('W', W.value)
+    W_sol = W.value
+    for n in range(N_original):
+        if z_mask[n] and not z_sol[n]:
+            W_sol = np.concatenate((W_sol[:n, :], np.zeros((1,M)), W_sol[n:,:]), axis=0)
+    assert W_sol.shape[0] == N_original, 'W not of correct shape'
+    
+    return z_sol.copy(), W_sol, prob.objective.value, True
+
+def compute_sinr(W=None, H=None, sigma_sq=1):
+    assert W is not None and H is not None, "Input not provided"
+    W_H = np.matmul(H.conj().T, W)
+    W_H = np.abs(W_H)**2
+    mask = np.eye(W_H.shape[0])
+    mask_comp = 1-mask
+    direct = np.sum(W_H*mask, axis=1)
+    interference = W_H*mask_comp
+    aggregate_interference = np.sum(interference, axis=1)
+    print('sinr computation', direct.shape, aggregate_interference.shape)
+
+    sinr = direct/(aggregate_interference + sigma_sq)
+    return sinr
 
 if __name__=='__main__':
     # N, K = 8,3

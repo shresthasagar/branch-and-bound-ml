@@ -1,9 +1,9 @@
 
-from setting import TASK
+from models.setting import TASK
 
 if TASK == 'antenna_selection':
     from antenna_selection.observation import Observation, LinearObservation
-    from antenna_selection.as_bb_test import ASBBenv as Environment, DefaultBranchingPolicy, solve_bb
+    from antenna_selection.bb_unified import BBenv as Environment, DefaultBranchingPolicy, solve_bb
 
 elif TASK == 'single_cast_beamforming':
     from single_beamforming.observation import Observation, LinearObservation
@@ -13,28 +13,21 @@ elif TASK == 'single_group_as_bm':
     from single_group_as_bm.observation import Observation, LinearObservation
     from single_group_as_bm.bb import BBenv as Environment, DefaultBranchingPolicy, solve_bb
 
-import torch
-import torch.nn as nn
+elif TASK == 'robust_beamforming':
+    from robust_beamforming.observation import Observation, LinearObservation
+    from robust_beamforming.bb_unified import BBenv as Environment, DefaultBranchingPolicy, solve_bb
+
+
 import numpy as np
 
-from gnn_policy import GNNPolicy, GNNNodeSelectionPolicy
-from tqdm import tqdm
-import torch_geometric
 import gzip
 import pickle
-from gnn_dataset import GraphNodeDataset, instance_generator
 from pathlib import Path
-from gnn_dataset import get_graph_from_obs
-import shutil
 import time
 import os
 from torch.multiprocessing import Pool
-import torch.multiprocessing as mp
 
-
-from models.fcn_policy import FCNNodeSelectionLinearPolicy, FCNNodeDataset
-from torch.utils.data import DataLoader
-from testH import Channels
+from models.helper import SolverException
 
 from torch.utils.data import Dataset
 
@@ -120,6 +113,7 @@ class DataCollect(object):
         self.oracle_dataset = OracleDataset(root=oracle_solution_filepath)
 
         self.num_instances = num_instances
+        self.file_count_offset = 0
 
 
     def collect_data(self, instance_gen, num_instances=10, policy='oracle', train=True):
@@ -152,16 +146,21 @@ class DataCollect(object):
             avg_oracle_time = np.mean(oracle_time)
             oracle_sample_available = True
         else:
-            H = np.random.randn(num_instances, N, M) + 1j*np.random.randn(num_instances, N,M)   
+            H = (np.random.randn(num_instances, N, M) + 1j*np.random.randn(num_instances, N,M))/np.sqrt(2)
             # H = Channels.copy() 
             instances = np.stack((np.real(H), np.imag(H)), axis=1)
             
-
             arguments_oracle = list(zip(list(instances), [self.max_ant]*num_instances))
             print('starting first pool')
-            with Pool(min(num_instances, 30)) as p:
+            with Pool(min(num_instances, 20)) as p:
                 out_oracle = p.map(self.solve_bb_process, arguments_oracle)
                 print('first pool ended')
+
+            # Prune away the problem instances that were not feasible (could not be solved)
+            for i in range(len(out_oracle)-1, -1, -1):
+                if out_oracle[i][1] == np.inf:
+                    del out_oracle[i]
+                    instances = np.concatenate((instances[:i,::], instances[i+1:,::]), axis=0)
 
             # the returned order is x_opt:[can be a tuple], global_U, timsteps, time
             optimal_solution_list = [out_oracle[i][0] for i in range(len(out_oracle))]
@@ -175,11 +174,12 @@ class DataCollect(object):
                                             [out_oracle[i][2] for i in range(len(out_oracle))],
                                             [out_oracle[i][3] for i in range(len(out_oracle))])
 
-        arguments_ml = list(zip(list(instances), optimal_solution_list, optimal_objective_list, range(num_instances), [policy]*num_instances))
-        # arguments_ml = list(zip(list(instances), optimal_solution_list, optimal_objective_list, range(num_instances)))
-
+        arguments_ml = list(zip(list(instances), optimal_solution_list, optimal_objective_list, range(len(instances)), [policy]*len(instances)))
+        # arguments_ml = list(zip(list(instances), optimal_solution_list, optimal_objective_list, range(len(instances))))
+       
+        
         print('starting second pool')
-        with Pool(min(num_instances,30)) as p:
+        with Pool(min(len(instances),30)) as p:
             out_ml = p.map(self.collect_data_instance, arguments_ml)
             # out_ml = p.map(self.dummy_collect_instance, arguments_ml)
 
@@ -199,65 +199,31 @@ class DataCollect(object):
         # avg_ml_ogap = np.mean(np.array([out_ml[i][1] for i in range(len(out_ml))]))
         avg_ml_time = np.mean(np.array([out_ml[i][2] for i in range(len(out_ml))]))
 
+        if train:
+            self.file_count_offset += len(instances)
+
+
         # return order is time speedup, ogap, steps_speedup
         return avg_oracle_time/avg_ml_time, avg_ml_ogap, avg_oracle_steps/avg_ml_steps
 
-
-    def collect_data_old(self, instance_gen, num_instances=10, policy='oracle'):
-
-        N, M = next(instance_gen).shape[1], next(instance_gen).shape[2]
-        H = np.random.randn(num_instances, N, M) + 1j*np.random.randn(num_instances, N,M)   
-        # H = Channels.copy() 
-        instances = np.stack((np.real(H), np.imag(H)), axis=1)
-        
-
-        arguments_oracle = list(zip(list(instances), [self.max_ant]*num_instances))
-        print('starting first pool')
-        with Pool(min(num_instances, 30)) as p:
-            out_oracle = p.map(self.solve_bb_process, arguments_oracle)
-            print('first pool ended')
-
-        # the returned order is x_opt:[can be a tuple], global_U, timsteps, time
-        optimal_solution_list = [out_oracle[i][0] for i in range(len(out_oracle))]
-        optimal_objective_list = [out_oracle[i][1] for i in range(len(out_oracle))]
-        avg_oracle_steps = np.mean(np.array([out_oracle[i][2] for i in range(len(out_oracle))]))
-        avg_oracle_time = np.mean(np.array([out_oracle[i][3] for i in range(len(out_oracle))]))
-
-        arguments_ml = list(zip(list(instances), optimal_solution_list, optimal_objective_list, range(num_instances), [policy]*num_instances))
-        # arguments_ml = list(zip(list(instances), optimal_solution_list, optimal_objective_list, range(num_instances)))
-
-        print('starting second pool')
-        with Pool(min(num_instances,30)) as p:
-            out_ml = p.map(self.collect_data_instance, arguments_ml)
-            # out_ml = p.map(self.dummy_collect_instance, arguments_ml)
-
-            print('second pool ended')
-        
-        # the returned order for collect_data_instance is ()
-        avg_ml_time = np.mean(np.array([out_ml[i][0] for i in range(len(out_ml))]))
-        # print('ogaps: {}'.format([out_ml[i][2] for i in range(len(out_ml))]))
-        avg_ml_ogap = 0
-        num_solved = 0
-        for i in range(len(out_ml)):
-            if out_ml[i][1] > -1:
-                avg_ml_ogap += out_ml[i][1] 
-                num_solved += 1
-        avg_ml_ogap /= num_solved
-        # avg_ml_ogap = np.mean(np.array([out_ml[i][1] for i in range(len(out_ml))]))
-        avg_ml_steps = np.mean(np.array([out_ml[i][2] for i in range(len(out_ml))]))
-
-        return avg_oracle_time/avg_ml_time, avg_ml_ogap, avg_oracle_steps/avg_ml_steps
-        # return 0, 0, 0
 
     def collect_data_instance(self, arguments):
         instance, w_optimal, optimal_objective, file_count, policy_filepath = arguments
         print('function {} started'.format(file_count))
         #TODO: do the following with parameters not filename
         # print('optimal ', w_optimal)
-        env = Environment(observation_function=self.observation_function, epsilon=0.002)
+        env = Environment(observation_function=self.observation_function, epsilon=0.005)
+
         env.set_node_select_policy(node_select_policy_path=policy_filepath, policy_type=self.policy_type)
         
-        env.reset(instance, max_ant=self.max_ant,  oracle_opt=w_optimal)
+        if TASK == 'robust_beamforming':
+            env.reset(instance, max_ant=self.max_ant,  oracle_opt=w_optimal, robust_beamforming=True)
+        elif TASK == 'antenna_selection':
+            env.reset(instance, max_ant=self.max_ant,  oracle_opt=w_optimal, robust_beamforming=False)
+        else:
+            env.reset(instance, max_ant=self.max_ant,  oracle_opt=w_optimal)
+
+
 
         branching_policy = DefaultBranchingPolicy()
         t1 = time.time()
@@ -267,7 +233,7 @@ class DataCollect(object):
         sum_label = 0
         node_counter = 0
         while timestep < MAX_STEPS and len(env.nodes)>0 and not done: 
-            # print('timestep {}'.format(timestep))
+            print('timestep {}'.format(timestep))
             env.fathom_nodes()
             if len(env.nodes) == 0:
                 break
@@ -320,7 +286,7 @@ class DataCollect(object):
         #         pickle.dump(debug_dict, f)
 
         # time_taken += time.time() - t1
-        # print('instance result', timestep, ogap, time_taken, sum_label, optimal_objective, ml)
+        print('instance result', timestep, ogap, time_taken, sum_label, optimal_objective, ml)
         # if ogap < -0.1:
         #     print('obj: {}, ml: {}'.format(env.H_complex, w_optimal, optimal_objective, ml))
         #     print('w_oracle: {}, w_ml: {}, z_oracl: {}, z_ml {}'.format(w_optimal[1], env.w_incumbent,  w_optimal[0], env.z_incumbent))
@@ -334,12 +300,18 @@ class DataCollect(object):
         return timestep, ogap, time_taken, sum_label/node_counter
     
     def solve_bb_process(self, tup):
-        instance, max_ant = tup
-        return solve_bb(instance, max_ant)     
+        try:
+            instance, max_ant = tup
+            output = solve_bb(instance, max_ant)
+        except SolverException as e:
+            print('Solver Exception: ', e)
+            return None, np.inf, 0, 0
+
+        return output
 
     def save_file(self, sample, file_count, node_counter):
         if self.filepath is not None:
-            filename = os.path.join(self.filepath,'sample_{}_{}.pkl'.format(file_count, node_counter))
+            filename = os.path.join(self.filepath,'sample_{}_{}.pkl'.format(self.file_count_offset + file_count, node_counter))
             with gzip.open(filename, 'wb') as f:
                 pickle.dump(sample, f)
 

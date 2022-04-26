@@ -8,7 +8,7 @@ from pathlib import Path
 
 def instance_generator(M=4, N=8):
     while 1:
-        yield np.random.randn(2,N,M)
+        yield np.random.randn(2,N,M)/np.sqrt(2)
 
 class BipartiteNodeData(torch_geometric.data.Data):
     """
@@ -40,28 +40,53 @@ class BipartiteNodeData(torch_geometric.data.Data):
         else:
             return super().__inc__(key, value)
 
+    def copy(self):
+        return BipartiteNodeData(antenna_features  = self.antenna_features.clone(),
+                                edge_indices       = np.array(self.edge_index.clone()),
+                                edge_features      = self.edge_attr.clone(),
+                                variable_features  = self.variable_features.clone(),
+                                candidates         = self.candidates,
+                                candidate_choice   = self.candidate_choices)
+
+    
+class GraphNodeDatasetFromBipartiteNode(torch_geometric.data.Dataset):
+    """
+    Constructs graph dataset from BipartiteNodeData
+    """
+    def __init__(self, samples):
+        super().__init__(root=None, transform=None, pre_transform=None)
+        self.samples = samples
+    
+    def len(self):
+        return len(self.samples)
+
+    def get(self, index):
+        return self.samples[index]
+
+
 
 class GraphNodeDataset(torch_geometric.data.Dataset):
     """
-    This class encodes a collection of graphs, as well as a method to load such graphs from the disk.
-    It can be used in turn by the data loaders provided by pytorch geometric.
+    Constructs graph dataset from Node observations
     """
-    def __init__(self, sample_files):
+    def __init__(self, samples, is_observation=False):
         super().__init__(root=None, transform=None, pre_transform=None)
-        self.sample_files = sample_files
+        self.samples = samples
+        self.is_observation = is_observation
 
     def len(self):
-        return len(self.sample_files)
+        return len(self.samples)
 
     def get(self, index):
         """
         This method loads a node bipartite graph observation as saved on the disk during data collection.
         """
-        with gzip.open(self.sample_files[index], 'rb') as f:
-            sample = pickle.load(f)
-
-        sample_observation, target = sample[0], sample[1]
-        
+        if not self.is_observation:
+            with gzip.open(self.samples[index], 'rb') as f:
+                sample = pickle.load(f)
+            sample_observation, target = sample[0], sample[1]
+        else:
+            sample_observation, target = self.samples[index][0], self.samples[index][1]
         
         # We note on which variables we were allowed to branch, the scores as well as the choice 
         # taken by expert branching (relative to the candidates)
@@ -79,6 +104,8 @@ class GraphNodeDataset(torch_geometric.data.Dataset):
             return graph, target
         else:
             return graph
+
+    
 
 class TargetLtODataset(torch.utils.data.Dataset):
     def __init__(self, sample_files):
@@ -215,4 +242,3 @@ def get_graph_from_obs(sample_observation, sample_action_set):
         graph.num_nodes = sample_observation.antenna_features.shape[0] + sample_observation.variable_features.shape[0]
         
         return graph
-

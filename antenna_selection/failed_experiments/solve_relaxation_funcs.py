@@ -125,7 +125,7 @@ if __name__=='__main__':
     N, K = 8,8
     max_ant = 5
     np.random.seed(150)
-    H = np.random.randn(N, K) + 1j*np.random.randn(N, K)
+    H = (np.random.randn(N, K) + 1j*np.random.randn(N, K))/np.sqrt(2)
     z_sol = np.random.binomial(size=N, n=1, p= 0.5)
     z_mask = np.random.binomial(size=N, n=1, p=0.2)
 

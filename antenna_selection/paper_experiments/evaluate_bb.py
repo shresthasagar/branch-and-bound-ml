@@ -1,5 +1,6 @@
-from robust_beamforming.bb_unified import solve_bb
-from as_omar import *
+from antenna_selection.bb_unified import solve_bb
+import numpy as np
+# from as_omar import *
 from multiprocessing import Pool
 import time
 import pickle
@@ -7,9 +8,9 @@ import pickle
 def solve_bb_pool(arguments):
     instance, max_ant = arguments
     try:
-        result = solve_bb(instance, max_ant=max_ant, robust_beamforming=False)
+        result = solve_bb(instance, max_ant=max_ant, robust_beamforming=True)
     except:
-        result = None, None, None, None
+        result = None, None, None, None, None, None, None
     return result
 
 N = [8,12,16]
@@ -25,29 +26,47 @@ for n in N:
                 if l<n:
                     combinations.append((n,m,l))
 
+
+
+
 combinations = [(4,2,2),
                 (4,3,2),
+                (8,2,4),
                 (8,3,4),
+                (8,4,4),
                 (8,5,4),
-                (8,7,4),
+                (10,2,6),
                 (10,4,6),
                 (10,6,6),
                 (10,8,6),
+                (12,2,8),
+                (12,4,8),
                 (12,6,8),
                 (12,8,8),
                 (12,10,8)]
 
+# combinations = [(8,2,4),
+#                 (8,4,4),
+#                 (8,6,4)]
+
+# combinations = [(10,2,6),
+#                 (12,2,8),
+#                 (12,4,8)]
+
+
 # Compute the ogap of Omar's method using the combinations
 
-save_data_filepath = 'data/omar_eval/omar_evaluation_data.pkl'
-save_result_filepath = 'data/omar_eval/omar_evaluation_result.pkl'
+# save_data_filepath = 'data/bb_eval_data.pkl'
+save_data_filepath = 'data/bb_approximate_eval_data.pkl'
+
+save_result_filepath = 'data/bb_approximate_eval_result.pkl'
 
 result = {'size':[], 'ogap':[], 'time':[], 'sol_rate':[]}
 # data = {'instance': [], 'z_opt':[], 'power_opt':[], 'steps':[], 'time':[]}
 data = {'size': [], 'data': []}
 # Run optimal algorithm and save the result
 
-np.random.seed(100)
+np.random.seed(1000)
 for (n,m,l) in combinations:
 
 # for (n,m,l) in combinations[5:]:
@@ -58,15 +77,20 @@ for (n,m,l) in combinations:
     instances = np.random.randn(num_egs, 2, n, m)/np.sqrt(2)
     arguments_oracle = list(zip(list(instances), [l]*num_egs))
 
-    with Pool(num_egs) as p:
-        out_oracle = p.map(solve_bb_pool, arguments_oracle)
-        print('pool ended')
+    # with Pool(num_egs) as p:
+    #     out_oracle = p.map(solve_bb_pool, arguments_oracle)
+    #     print('pool ended')
     
+    out_oracle = []
+    for i in range(num_egs):
+        out_oracle.append(solve_bb_pool(arguments_oracle[i]))
+
     optimal_solution_list = [out_oracle[i][0] for i in range(len(out_oracle))]
     optimal_objective_list = [out_oracle[i][1] for i in range(len(out_oracle))]
     oracle_time = [out_oracle[i][3] for i in range(len(out_oracle))]
+    num_problems = [out_oracle[i][6] for i in range(len(out_oracle))]
     
-    solution_data = (instances, optimal_solution_list, optimal_objective_list, oracle_time)
+    solution_data = (instances, optimal_solution_list, optimal_objective_list, oracle_time, num_problems)
     data['size'].append((n,m,l))
     data['data'].append(solution_data)
     
